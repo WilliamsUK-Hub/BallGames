@@ -199,6 +199,9 @@
   /** Temporary multipliers on `render.sprite` while colliding (visual only). */
   const SQUISH_SPRITE_X = 1.09;
   const SQUISH_SPRITE_Y = 0.91;
+  /** Visual ease-in for balls created by merging (reduces pop / flash). */
+  const MERGE_SPAWN_DURATION_MS = 160;
+  const MERGE_SPAWN_SCALE_FROM = 0.9;
 
   /** Fixed playfield size (physics + canvas coordinate space). */
   const PLAY_WIDTH = 400;
@@ -249,7 +252,8 @@
     });
   }
 
-  function createBall(x, y, level) {
+  function createBall(x, y, level, createOpts) {
+    createOpts = createOpts || {};
     level = Math.min(Math.max(0, level | 0), MAX_LEVEL);
     const r = ballRadius(level);
     const tint = FALLBACK_TINT[level];
@@ -288,8 +292,35 @@
     if (!body.render) body.render = {};
     body.render.sprite = { xScale: 1, yScale: 1 };
     body.inPlay = false;
+    if (createOpts.fromMerge) {
+      body.mergeSpawnAt = performance.now();
+      body.mergeSpawnDuration = MERGE_SPAWN_DURATION_MS;
+    }
     World.add(world, body);
     return body;
+  }
+
+  /** Ease-out cubic; t in [0,1]. */
+  function easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  /** Returns { alpha, scaleMult } for merge-spawn easing, or full opacity / scale 1 when done. */
+  function mergeSpawnVisualState(body, now) {
+    if (body.mergeSpawnAt == null) return { alpha: 1, scaleMult: 1 };
+    var dur = body.mergeSpawnDuration != null ? body.mergeSpawnDuration : MERGE_SPAWN_DURATION_MS;
+    var elapsed = now - body.mergeSpawnAt;
+    if (elapsed >= dur) {
+      body.mergeSpawnAt = null;
+      body.mergeSpawnDuration = null;
+      return { alpha: 1, scaleMult: 1 };
+    }
+    var t = elapsed / dur;
+    var e = easeOutCubic(t);
+    return {
+      alpha: 0.2 + 0.8 * e,
+      scaleMult: MERGE_SPAWN_SCALE_FROM + (1 - MERGE_SPAWN_SCALE_FROM) * e
+    };
   }
 
   function markBallsInPlay() {
@@ -381,12 +412,13 @@
     scoreEl.textContent = String(score);
   }
 
+  /** @returns {boolean} true if a merge actually happened */
   function mergePair(a, b) {
-    if (!bodyStillInWorld(a) || !bodyStillInWorld(b)) return;
-    if (!sameBallType(a, b)) return;
-    if (a.mergeScheduled || b.mergeScheduled) return;
+    if (!bodyStillInWorld(a) || !bodyStillInWorld(b)) return false;
+    if (!sameBallType(a, b)) return false;
+    if (a.mergeScheduled || b.mergeScheduled) return false;
     const lvl = a.ballType;
-    if (lvl >= MAX_LEVEL) return;
+    if (lvl >= MAX_LEVEL) return false;
 
     a.mergeScheduled = true;
     b.mergeScheduled = true;
@@ -398,12 +430,13 @@
     World.remove(world, a);
     World.remove(world, b);
 
-    const merged = createBall(mx, my, newLevel);
+    const merged = createBall(mx, my, newLevel, { fromMerge: true });
     Body.setVelocity(merged, {
       x: (a.velocity.x + b.velocity.x) * 0.5,
       y: (a.velocity.y + b.velocity.y) * 0.5
     });
     updateScore((newLevel + 1) * 10);
+    return true;
   }
 
   function checkMerge(event) {
@@ -416,8 +449,10 @@
 
   /** Physics events sometimes miss contacts; overlap test picks up real collisions. */
   function mergeOverlappingBalls() {
+    var safety = 0;
     var merged = true;
-    while (merged) {
+    while (merged && safety < 24) {
+      safety++;
       merged = false;
       var balls = Composite.allBodies(world).filter(function (b) {
         return b.isBall;
@@ -430,9 +465,10 @@
           if (!bodyStillInWorld(b)) continue;
           if (!sameBallType(a, b)) continue;
           if (!ballsOverlap(a, b)) continue;
-          mergePair(a, b);
-          merged = true;
-          break outer;
+          if (mergePair(a, b)) {
+            merged = true;
+            break outer;
+          }
         }
       }
     }
@@ -494,7 +530,7 @@
     World.add(world, wallBodies);
   }
 
-  function drawAnimalBall(ctx, body) {
+  function drawAnimalBall(ctx, body, now) {
     if (!body.isBall) return;
     const lvl = body.ballLevel;
     const r = ballRadius(lvl);
@@ -507,10 +543,13 @@
     var dw = body.spriteDrawW || 2 * r;
     var dh = body.spriteDrawH || 2 * r;
     var clip = body.shapeClipVertices;
+    var spawn = mergeSpawnVisualState(body, now);
 
     ctx.save();
+    ctx.globalAlpha = spawn.alpha;
     ctx.translate(x, y);
     ctx.rotate(body.angle);
+    ctx.scale(spawn.scaleMult, spawn.scaleMult);
     ctx.scale(spr.xScale, spr.yScale);
     ctx.beginPath();
     var k;
@@ -536,29 +575,12 @@
       ctx.fillRect(-dw * 0.5, -dh * 0.5, dw, dh);
     }
     ctx.restore();
-
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(body.angle);
-    ctx.scale(spr.xScale, spr.yScale);
-    ctx.beginPath();
-    if (clip && clip.length >= 3) {
-      ctx.moveTo(clip[0].x, clip[0].y);
-      for (var k2 = 1; k2 < clip.length; k2++) {
-        ctx.lineTo(clip[k2].x, clip[k2].y);
-      }
-      ctx.closePath();
-    } else {
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-    }
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
   function renderLoop() {
     const ctx = canvas.getContext('2d');
+    const now = performance.now();
     ctx.clearRect(0, 0, width, height);
 
     ctx.fillStyle = '#0c0c18';
@@ -586,7 +608,7 @@
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (b.label === 'wall') continue;
-      drawAnimalBall(ctx, b);
+      drawAnimalBall(ctx, b, now);
     }
 
     requestAnimationFrame(renderLoop);
