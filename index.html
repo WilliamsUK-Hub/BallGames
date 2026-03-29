@@ -35,66 +35,194 @@
       z-index: 1;
     }
     #hud span { opacity: 0.85; }
+    #nextPreview {
+      width: 34px;
+      height: 34px;
+      object-fit: cover;
+      border-radius: 50%;
+      vertical-align: middle;
+      box-shadow: 0 0 12px rgba(120, 220, 255, 0.35);
+      border: 2px solid rgba(180, 220, 255, 0.5);
+      background: #1a1a28;
+    }
     #score { font-variant-numeric: tabular-nums; font-weight: 600; color: #7dff9a; text-shadow: 0 0 12px rgba(125,255,154,0.45); }
     #wrap {
       flex: 1;
       min-height: 0;
       position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+      padding-left: max(10px, env(safe-area-inset-left));
+      padding-right: max(10px, env(safe-area-inset-right));
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+    #stage {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #scaleWrap {
+      flex: 0 0 auto;
+      flex-shrink: 0;
+      line-height: 0;
+      /* Do not use overflow:hidden — it clips the right/bottom border after transform scale. */
+      overflow: visible;
+    }
+    #playShell {
+      box-sizing: content-box;
+      transform-origin: top left;
+      border: 3px solid rgba(120, 210, 255, 0.92);
+      border-radius: 14px;
+      background: #0c0c18;
+      box-shadow:
+        0 0 24px rgba(0, 200, 255, 0.12),
+        inset 0 0 48px rgba(0, 0, 0, 0.35);
     }
     canvas {
       display: block;
-      width: 100%;
-      height: 100%;
       touch-action: none;
+      vertical-align: top;
     }
     #hint {
-      position: absolute;
-      bottom: max(14px, env(safe-area-inset-bottom));
-      left: 50%;
-      transform: translateX(-50%);
+      flex: 0 0 auto;
+      margin-top: 10px;
       font-size: 13px;
       color: rgba(200,200,230,0.55);
       pointer-events: none;
       text-align: center;
-      max-width: 90%;
+      max-width: min(100%, 420px);
+      padding: 0 8px;
     }
+    #gameOverOverlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(6, 8, 18, 0.82);
+      z-index: 20;
+      flex-direction: column;
+      gap: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+    #gameOverOverlay.is-visible { display: flex; }
+    #gameOverOverlay h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #ff6b8a;
+      text-shadow: 0 0 20px rgba(255, 80, 120, 0.5);
+    }
+    #gameOverOverlay p { margin: 0; color: #c8c8e0; }
+    #restartBtn {
+      margin-top: 8px;
+      padding: 12px 28px;
+      font-size: 16px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #3d8cff, #2563d4);
+      color: #fff;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #restartBtn:active { transform: scale(0.98); }
   </style>
 </head>
 <body>
   <div id="game">
     <div id="hud">
       <span>Next</span>
-      <span id="nextLabel">●</span>
+      <img id="nextPreview" src="" width="34" height="34" alt="" />
       <span>Score <span id="score">0</span></span>
     </div>
     <div id="wrap">
-      <canvas id="canvas" aria-label="Game"></canvas>
-      <p id="hint">Tap to drop · same sizes merge</p>
+      <div id="stage">
+        <div id="scaleWrap">
+          <div id="playShell">
+            <canvas id="canvas" width="400" height="720" aria-label="Game"></canvas>
+          </div>
+        </div>
+        <p id="hint">Tap to drop · same animal merges · stay below the line</p>
+      </div>
     </div>
   </div>
 
+  <div id="gameOverOverlay" aria-live="polite">
+    <h2>Game over</h2>
+    <p>Animal crossed the danger line.</p>
+    <p>Final score: <strong id="finalScore">0</strong></p>
+    <button type="button" id="restartBtn">Play again</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+  <script src="js/image-trace.js"></script>
   <script>
 (function () {
+  if (window.Matter && window.decomp && window.Matter.Common.setDecomp) {
+    window.Matter.Common.setDecomp(window.decomp);
+  }
+
   const Matter = window.Matter;
   const { Engine, Runner, World, Bodies, Body, Events, Composite } = Matter;
 
-  const NEON = [
-    '#ff2efd', '#00f7ff', '#faff00', '#ff6b00', '#39ff14',
-    '#ff0d8f', '#00ffcc', '#fffc40', '#ff3366', '#b026ff', '#00ff66'
+  /** One image per tier: assets/animal1.png … animalN.png (level 0 → animal1). */
+  const NUM_ANIMALS = 8;
+  const ANIMAL_URLS = [];
+  for (var ai = 0; ai < NUM_ANIMALS; ai++) {
+    ANIMAL_URLS.push('assets/animal' + (ai + 1) + '.png');
+  }
+  const FALLBACK_TINT = [
+    '#b8c4d4', '#ffb347', '#daa06d', '#f0f0f0',
+    '#ffb6c8', '#e8e8e8', '#a67c52', '#f4c430'
   ];
 
-  const REST = 0.72;
-  const FRICTION = 0.02;
+  const REST_BALL = 0.36;
+  const REST_WALL = 0.26;
+  /** Higher friction so glancing hits convert to spin (roll) instead of pure slide. */
+  const FRICTION = 0.34;
+  const FRICTION_BALL = 0.44;
+  const FRICTION_BALL_STATIC = 0.52;
+  const AIR_DRAG = 0.03;
   const WALL_THICK = 100;
-  const MAX_LEVEL = NEON.length - 1;
+  const MERGE_OVERLAP = 1.2;
+  const MAX_LEVEL = ANIMAL_URLS.length - 1;
+  const SQUISH_MS = 100;
+  /** Temporary multipliers on `render.sprite` while colliding (visual only). */
+  const SQUISH_SPRITE_X = 1.09;
+  const SQUISH_SPRITE_Y = 0.91;
+
+  /** Fixed playfield size (physics + canvas coordinate space). */
+  const PLAY_WIDTH = 400;
+  const PLAY_HEIGHT = 720;
+  const BORDER_PX = 3;
+
+  /** Horizontal danger line (canvas Y). Lose if any “in-play” ball’s top edge goes above this. */
+  const DANGER_LINE_Y = 132;
+  /** Balls must fall fully below the line before we track them (avoids losing while spawning). */
+  const IN_PLAY_CLEAR_BELOW = 28;
 
   const canvas = document.getElementById('canvas');
+  const scaleWrap = document.getElementById('scaleWrap');
+  const playShell = document.getElementById('playShell');
+  const wrapEl = document.getElementById('wrap');
+  const stageEl = document.getElementById('stage');
   const scoreEl = document.getElementById('score');
-  const nextLabel = document.getElementById('nextLabel');
+  const nextPreview = document.getElementById('nextPreview');
+  const gameOverOverlay = document.getElementById('gameOverOverlay');
+  const finalScoreEl = document.getElementById('finalScore');
+  const restartBtn = document.getElementById('restartBtn');
 
-  let width = 0;
-  let height = 0;
+  let width = PLAY_WIDTH;
+  let height = PLAY_HEIGHT;
   let engine;
   let runner;
   let world;
@@ -102,28 +230,150 @@
   let score = 0;
   let nextDropLevel = 0;
   let dropCooldown = false;
+  let gameOver = false;
+  /** @type {HTMLImageElement[]} */
+  var animalImages = [];
+  /**
+   * Per level: traced polygon + sprite size (from ImageTrace), or null to fall back to circle.
+   * @type {Array<{ vertices: Array<{x:number,y:number}>, spriteDrawW: number, spriteDrawH: number } | null>}
+   */
+  var cachedShapeData = [];
 
   function ballRadius(level) {
     return 18 + level * 7;
   }
 
+  function cloneVertices(verts) {
+    return verts.map(function (v) {
+      return { x: v.x, y: v.y };
+    });
+  }
+
   function createBall(x, y, level) {
     level = Math.min(Math.max(0, level | 0), MAX_LEVEL);
     const r = ballRadius(level);
-    const body = Bodies.circle(x, y, r, {
-      restitution: REST,
-      friction: FRICTION,
-      frictionStatic: FRICTION,
-      frictionAir: 0.012,
-      density: 0.0018,
+    const tint = FALLBACK_TINT[level];
+    const commonOpts = {
+      restitution: REST_BALL,
+      friction: FRICTION_BALL,
+      frictionStatic: FRICTION_BALL_STATIC,
+      frictionAir: AIR_DRAG,
+      density: 0.0022,
       label: 'ball',
-      render: { fillStyle: NEON[level] }
-    });
+      render: { fillStyle: tint }
+    };
+
+    var shape = cachedShapeData[level];
+    var body;
+
+    if (shape && shape.vertices && shape.vertices.length >= 3) {
+      var verts = cloneVertices(shape.vertices);
+      body = Bodies.fromVertices(x, y, [verts], commonOpts, true, 0.04, 1, 0.03);
+      body.shapeClipVertices = cloneVertices(shape.vertices);
+      body.spriteDrawW = shape.spriteDrawW;
+      body.spriteDrawH = shape.spriteDrawH;
+    } else {
+      body = Bodies.circle(x, y, r, commonOpts);
+      body.shapeClipVertices = null;
+      var d = 2 * r;
+      body.spriteDrawW = d;
+      body.spriteDrawH = d;
+    }
+
     body.isBall = true;
+    body.ballType = level;
     body.ballLevel = level;
     body.mergeScheduled = false;
+    body.sleepThreshold = 22;
+    if (!body.render) body.render = {};
+    body.render.sprite = { xScale: 1, yScale: 1 };
+    body.inPlay = false;
     World.add(world, body);
     return body;
+  }
+
+  function markBallsInPlay() {
+    var bodies = Composite.allBodies(world);
+    for (var i = 0; i < bodies.length; i++) {
+      var b = bodies[i];
+      if (!b.isBall || b.inPlay) continue;
+      if (b.bounds && b.bounds.min.y > DANGER_LINE_Y + IN_PLAY_CLEAR_BELOW) {
+        b.inPlay = true;
+      }
+    }
+  }
+
+  function checkDangerLine() {
+    if (gameOver) return;
+    markBallsInPlay();
+    var bodies = Composite.allBodies(world);
+    for (var i = 0; i < bodies.length; i++) {
+      var b = bodies[i];
+      if (!b.isBall || !b.inPlay || !b.bounds) continue;
+      if (b.bounds.min.y < DANGER_LINE_Y) {
+        triggerGameOver();
+        return;
+      }
+    }
+  }
+
+  function triggerGameOver() {
+    if (gameOver) return;
+    gameOver = true;
+    Runner.stop(runner);
+    canvas.removeEventListener('pointerdown', onPointerDown);
+    if (finalScoreEl) finalScoreEl.textContent = String(score);
+    if (gameOverOverlay) gameOverOverlay.classList.add('is-visible');
+  }
+
+  function restartGame() {
+    location.reload();
+  }
+
+  function squishBall(body) {
+    if (!body || !body.isBall || !bodyStillInWorld(body)) return;
+    if (!body.render) body.render = {};
+    if (!body.render.sprite) body.render.sprite = { xScale: 1, yScale: 1 };
+    clearTimeout(body._squishEndTimer);
+    body.render.sprite.xScale = SQUISH_SPRITE_X;
+    body.render.sprite.yScale = SQUISH_SPRITE_Y;
+    body._squishEndTimer = setTimeout(function () {
+      if (!bodyStillInWorld(body) || !body.render || !body.render.sprite) return;
+      body.render.sprite.xScale = 1;
+      body.render.sprite.yScale = 1;
+    }, SQUISH_MS);
+  }
+
+  function onCollisionSquish(event) {
+    var pairs = event.pairs;
+    for (var i = 0; i < pairs.length; i++) {
+      var bodyA = pairs[i].bodyA;
+      var bodyB = pairs[i].bodyB;
+      if (bodyA.isBall) squishBall(bodyA);
+      if (bodyB.isBall) squishBall(bodyB);
+    }
+  }
+
+  /** Same type = same tier (colour + size). */
+  function sameBallType(a, b) {
+    return !!(a.isBall && b.isBall && a.ballType === b.ballType);
+  }
+
+  function bodyStillInWorld(body) {
+    var list = Composite.allBodies(world);
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === body) return true;
+    }
+    return false;
+  }
+
+  function ballsOverlap(a, b) {
+    var ra = ballRadius(a.ballType);
+    var rb = ballRadius(b.ballType);
+    var dx = b.position.x - a.position.x;
+    var dy = b.position.y - a.position.y;
+    var sep = ra + rb - MERGE_OVERLAP;
+    return dx * dx + dy * dy < sep * sep;
   }
 
   function updateScore(points) {
@@ -132,11 +382,10 @@
   }
 
   function mergePair(a, b) {
-    if (!a.isBall || !b.isBall) return;
-    if (!Composite.contains(world, a) || !Composite.contains(world, b)) return;
-    if (a.ballLevel !== b.ballLevel) return;
+    if (!bodyStillInWorld(a) || !bodyStillInWorld(b)) return;
+    if (!sameBallType(a, b)) return;
     if (a.mergeScheduled || b.mergeScheduled) return;
-    const lvl = a.ballLevel;
+    const lvl = a.ballType;
     if (lvl >= MAX_LEVEL) return;
 
     a.mergeScheduled = true;
@@ -165,10 +414,51 @@
     }
   }
 
+  /** Physics events sometimes miss contacts; overlap test picks up real collisions. */
+  function mergeOverlappingBalls() {
+    var merged = true;
+    while (merged) {
+      merged = false;
+      var balls = Composite.allBodies(world).filter(function (b) {
+        return b.isBall;
+      });
+      outer: for (var i = 0; i < balls.length; i++) {
+        var a = balls[i];
+        if (!bodyStillInWorld(a)) continue;
+        for (var j = i + 1; j < balls.length; j++) {
+          var b = balls[j];
+          if (!bodyStillInWorld(b)) continue;
+          if (!sameBallType(a, b)) continue;
+          if (!ballsOverlap(a, b)) continue;
+          mergePair(a, b);
+          merged = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  function fitPlayArea() {
+    var outerW = PLAY_WIDTH + 2 * BORDER_PX;
+    var outerH = PLAY_HEIGHT + 2 * BORDER_PX;
+    var pad = 16;
+    var hintReserve = 52;
+    var availW = stageEl.clientWidth - pad;
+    var availH = stageEl.clientHeight - pad - hintReserve;
+    if (availW < 60) availW = stageEl.clientWidth;
+    if (availH < 60) availH = stageEl.clientHeight - hintReserve;
+    var s = Math.min(availW / outerW, availH / outerH, 1);
+    playShell.style.boxSizing = 'content-box';
+    playShell.style.width = PLAY_WIDTH + 'px';
+    playShell.style.height = PLAY_HEIGHT + 'px';
+    playShell.style.transform = 'scale(' + s + ')';
+    scaleWrap.style.width = Math.ceil(outerW * s) + 'px';
+    scaleWrap.style.height = Math.ceil(outerH * s) + 'px';
+  }
+
   function resize() {
-    const wrap = canvas.parentElement;
-    width = wrap.clientWidth;
-    height = wrap.clientHeight;
+    width = PLAY_WIDTH;
+    height = PLAY_HEIGHT;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
@@ -177,64 +467,93 @@
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    if (!engine) return;
+    fitPlayArea();
 
-    for (const w of wallBodies) {
-      World.remove(world, w);
-    }
-    wallBodies = [];
+    if (!engine || wallBodies.length > 0) return;
 
     const groundY = height + WALL_THICK / 2 - 2;
     const ground = Bodies.rectangle(width / 2, groundY, width + WALL_THICK * 2, WALL_THICK, {
       isStatic: true,
       friction: FRICTION,
-      restitution: REST,
+      restitution: REST_WALL,
       label: 'wall'
     });
     const left = Bodies.rectangle(-WALL_THICK / 2, height / 2, WALL_THICK, height + WALL_THICK * 2, {
       isStatic: true,
       friction: FRICTION,
-      restitution: REST,
+      restitution: REST_WALL,
       label: 'wall'
     });
     const right = Bodies.rectangle(width + WALL_THICK / 2, height / 2, WALL_THICK, height + WALL_THICK * 2, {
       isStatic: true,
       friction: FRICTION,
-      restitution: REST,
+      restitution: REST_WALL,
       label: 'wall'
     });
     wallBodies = [ground, left, right];
     World.add(world, wallBodies);
   }
 
-  function drawNeonBall(ctx, body) {
+  function drawAnimalBall(ctx, body) {
     if (!body.isBall) return;
     const lvl = body.ballLevel;
     const r = ballRadius(lvl);
     const x = body.position.x;
     const y = body.position.y;
-    const color = NEON[lvl];
+    const img = animalImages[lvl];
+    const tint = FALLBACK_TINT[lvl];
+
+    var spr = body.render && body.render.sprite ? body.render.sprite : { xScale: 1, yScale: 1 };
+    var dw = body.spriteDrawW || 2 * r;
+    var dh = body.spriteDrawH || 2 * r;
+    var clip = body.shapeClipVertices;
 
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(body.angle);
-
-    const g = ctx.createRadialGradient(-r * 0.35, -r * 0.35, 0, 0, 0, r);
-    g.addColorStop(0, '#ffffff');
-    g.addColorStop(0.25, color);
-    g.addColorStop(1, color);
-
+    ctx.scale(spr.xScale, spr.yScale);
     ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fillStyle = g;
-    ctx.fill();
+    var k;
+    if (clip && clip.length >= 3) {
+      ctx.moveTo(clip[0].x, clip[0].y);
+      for (k = 1; k < clip.length; k++) {
+        ctx.lineTo(clip[k].x, clip[k].y);
+      }
+      ctx.closePath();
+    } else {
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+    }
+    ctx.clip();
 
-    ctx.strokeStyle = color;
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, -dw * 0.5, -dh * 0.5, dw, dh);
+    } else {
+      const g = ctx.createRadialGradient(-r * 0.35, -r * 0.35, 0, 0, 0, r);
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0.35, tint);
+      g.addColorStop(1, tint);
+      ctx.fillStyle = g;
+      ctx.fillRect(-dw * 0.5, -dh * 0.5, dw, dh);
+    }
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(body.angle);
+    ctx.scale(spr.xScale, spr.yScale);
+    ctx.beginPath();
+    if (clip && clip.length >= 3) {
+      ctx.moveTo(clip[0].x, clip[0].y);
+      for (var k2 = 1; k2 < clip.length; k2++) {
+        ctx.lineTo(clip[k2].x, clip[k2].y);
+      }
+      ctx.closePath();
+    } else {
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+    }
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
     ctx.lineWidth = 2;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 14;
     ctx.stroke();
-
     ctx.restore();
   }
 
@@ -245,11 +564,29 @@
     ctx.fillStyle = '#0c0c18';
     ctx.fillRect(0, 0, width, height);
 
+    ctx.save();
+    ctx.setLineDash([10, 8]);
+    ctx.strokeStyle = 'rgba(255, 90, 110, 0.95)';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(255, 60, 90, 0.45)';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(8, DANGER_LINE_Y);
+    ctx.lineTo(width - 8, DANGER_LINE_Y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255, 120, 140, 0.85)';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('Danger — keep animals below', width - 10, DANGER_LINE_Y - 6);
+    ctx.restore();
+
     const bodies = Composite.allBodies(world);
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (b.label === 'wall') continue;
-      drawNeonBall(ctx, b);
+      drawAnimalBall(ctx, b);
     }
 
     requestAnimationFrame(renderLoop);
@@ -257,16 +594,15 @@
 
   function pickNextLevel() {
     nextDropLevel = Math.floor(Math.random() * 3);
-    nextLabel.textContent = '●';
-    nextLabel.style.color = NEON[nextDropLevel];
-    nextLabel.style.textShadow = '0 0 14px ' + NEON[nextDropLevel];
+    nextPreview.src = ANIMAL_URLS[nextDropLevel];
+    nextPreview.alt = 'Next: tier ' + (nextDropLevel + 1);
   }
 
   function tryDrop(clientX, clientY) {
-    if (dropCooldown) return;
+    if (gameOver || dropCooldown) return;
     const rect = canvas.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+    const x = ((clientX - rect.left) / rect.width) * width;
+    const y = ((clientY - rect.top) / rect.height) * height;
     if (x < 0 || x > width || y < 0 || y > height) return;
 
     const r = ballRadius(nextDropLevel);
@@ -286,6 +622,58 @@
     canvas.setPointerCapture(e.pointerId);
   }
 
+  function preloadAnimalImages(done) {
+    var n = ANIMAL_URLS.length;
+    var left = n;
+    animalImages = new Array(n);
+    if (n === 0) {
+      done();
+      return;
+    }
+    for (var i = 0; i < n; i++) {
+      (function (idx) {
+        var im = new Image();
+        im.onload = function () {
+          left--;
+          if (left === 0) done();
+        };
+        im.onerror = function () {
+          left--;
+          if (left === 0) done();
+        };
+        im.src = ANIMAL_URLS[idx];
+        animalImages[idx] = im;
+      })(i);
+    }
+  }
+
+  function buildShapeCache() {
+    cachedShapeData = new Array(NUM_ANIMALS);
+    var IT = window.ImageTrace;
+    if (!IT || typeof IT.traceImageToVertices !== 'function') {
+      for (var z = 0; z < NUM_ANIMALS; z++) cachedShapeData[z] = null;
+      return;
+    }
+    var lv;
+    for (lv = 0; lv < NUM_ANIMALS; lv++) {
+      var img = animalImages[lv];
+      var targetR = ballRadius(lv);
+      cachedShapeData[lv] = null;
+      if (!img || !img.complete || img.naturalWidth < 2) continue;
+      try {
+        var traced = IT.traceImageToVertices(img, targetR, {
+          maxTraceDim: 128,
+          rdpEpsilon: 1.2
+        });
+        if (traced && traced.vertices && traced.vertices.length >= 3) {
+          cachedShapeData[lv] = traced;
+        }
+      } catch (err) {
+        cachedShapeData[lv] = null;
+      }
+    }
+  }
+
   function init() {
     engine = Engine.create({ enableSleeping: true });
     world = engine.world;
@@ -298,14 +686,27 @@
     Runner.run(runner, engine);
 
     Events.on(engine, 'collisionStart', checkMerge);
+    Events.on(engine, 'collisionStart', onCollisionSquish);
+    Events.on(engine, 'collisionActive', checkMerge);
+    Events.on(engine, 'afterUpdate', function () {
+      mergeOverlappingBalls();
+      checkDangerLine();
+    });
 
     resize();
     window.addEventListener('resize', resize);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', fitPlayArea);
+    }
 
     canvas.addEventListener('pointerdown', onPointerDown);
+    if (restartBtn) restartBtn.addEventListener('click', restartGame);
 
-    pickNextLevel();
     renderLoop();
+    preloadAnimalImages(function () {
+      buildShapeCache();
+      pickNextLevel();
+    });
   }
 
   init();
