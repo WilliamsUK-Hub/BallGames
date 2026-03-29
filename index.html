@@ -205,6 +205,19 @@
   const MERGE_SPAWN_SCALE_FROM = 1;
   /** Merged balls ignore merge until this elapses so chain steps stay visible (ms). */
   const MERGE_CHAIN_DELAY_MS = 260;
+  /** Two balls shrink and move to midpoint (ms). */
+  const MERGE_PAIR_TWEEN_MS = 150;
+  /** New ball scale ease-out after pair tween (ms). */
+  const MERGE_POP_MS = 150;
+  const MERGE_POP_FROM = 0.5;
+  const PARTICLE_LIFE_MS = 300;
+  const PARTICLE_COUNT_MIN = 6;
+  const PARTICLE_COUNT_MAX = 8;
+
+  /** @type {Array<object>} */
+  var mergePairTweens = [];
+  /** @type {Array<object>} */
+  var particles = [];
 
   /** Fixed playfield size (physics + canvas coordinate space). */
   const PLAY_WIDTH = 400;
@@ -331,6 +344,151 @@
     };
   }
 
+  /** Post-merge pop-in (scale 0.5 → 1). */
+  function mergePopVisualState(body, now) {
+    if (body.mergePopAt == null) return { scaleMult: 1 };
+    var dur = body.mergePopDuration != null ? body.mergePopDuration : MERGE_POP_MS;
+    var elapsed = now - body.mergePopAt;
+    if (elapsed >= dur) {
+      body.mergePopAt = null;
+      body.mergePopDuration = null;
+      body.mergePopFrom = null;
+      return { scaleMult: 1 };
+    }
+    var t = elapsed / dur;
+    var e = easeOutCubic(t);
+    var from = body.mergePopFrom != null ? body.mergePopFrom : MERGE_POP_FROM;
+    return { scaleMult: from + (1 - from) * e };
+  }
+
+  function spawnParticleBurst(px, py, color) {
+    var n = PARTICLE_COUNT_MIN + Math.floor(Math.random() * (PARTICLE_COUNT_MAX - PARTICLE_COUNT_MIN + 1));
+    var now = performance.now();
+    var i;
+    for (i = 0; i < n; i++) {
+      var ang = Math.random() * Math.PI * 2;
+      var sp = 70 + Math.random() * 85;
+      particles.push({
+        x: px,
+        y: py,
+        vx: Math.cos(ang) * sp,
+        vy: Math.sin(ang) * sp,
+        born: now,
+        lastT: now,
+        maxLife: PARTICLE_LIFE_MS,
+        color: color,
+        r: 2 + Math.random() * 2.5
+      });
+    }
+  }
+
+  function updateParticles(now) {
+    var i;
+    for (i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      var dt = (now - p.lastT) / 1000;
+      p.lastT = now;
+      if (dt > 0.05) dt = 0.05;
+      if (dt < 0) dt = 0;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (now - p.born >= p.maxLife) particles.splice(i, 1);
+    }
+  }
+
+  function drawParticles(ctx, now) {
+    var i;
+    for (i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      var age = now - p.born;
+      var a = 1 - age / p.maxLife;
+      if (a <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBallSnapshot(ctx, x, y, angle, level, clip, spriteDrawW, spriteDrawH, scaleMult, alpha) {
+    var r = ballRadius(level);
+    var img = animalImages[level];
+    var tint = FALLBACK_TINT[level];
+    var dw = spriteDrawW || 2 * r;
+    var dh = spriteDrawH || 2 * r;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.scale(scaleMult, scaleMult);
+    ctx.beginPath();
+    var k;
+    if (clip && clip.length >= 3) {
+      ctx.moveTo(clip[0].x, clip[0].y);
+      for (k = 1; k < clip.length; k++) ctx.lineTo(clip[k].x, clip[k].y);
+      ctx.closePath();
+    } else {
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+    }
+    ctx.clip();
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, -dw * 0.5, -dh * 0.5, dw, dh);
+    } else {
+      var g = ctx.createRadialGradient(-r * 0.35, -r * 0.35, 0, 0, 0, r);
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0.35, tint);
+      g.addColorStop(1, tint);
+      ctx.fillStyle = g;
+      ctx.fillRect(-dw * 0.5, -dh * 0.5, dw, dh);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawMergePairTweens(ctx, now) {
+    var i;
+    for (i = 0; i < mergePairTweens.length; i++) {
+      var tw = mergePairTweens[i];
+      var elapsed = now - tw.startTime;
+      var u = Math.min(1, Math.max(0, elapsed / tw.duration));
+      var ax = tw.ax0 + (tw.midX - tw.ax0) * u;
+      var ay = tw.ay0 + (tw.midY - tw.ay0) * u;
+      var bx = tw.bx0 + (tw.midX - tw.bx0) * u;
+      var by = tw.by0 + (tw.midY - tw.by0) * u;
+      var sc = 1 - u;
+      drawBallSnapshot(ctx, ax, ay, tw.angleA, tw.level, tw.clipA, tw.spriteDrawWA, tw.spriteDrawHA, sc, 1);
+      drawBallSnapshot(ctx, bx, by, tw.angleB, tw.level, tw.clipB, tw.spriteDrawWB, tw.spriteDrawHB, sc, 1);
+    }
+  }
+
+  function completeMergeTween(tw) {
+    var now = performance.now();
+    var bright = FALLBACK_TINT[tw.newLevel] || '#a8f0ff';
+    spawnParticleBurst(tw.midX, tw.midY, bright);
+    var merged = createBall(tw.midX, tw.midY, tw.newLevel, { fromMerge: true });
+    merged.mergePopAt = now;
+    merged.mergePopDuration = MERGE_POP_MS;
+    merged.mergePopFrom = MERGE_POP_FROM;
+    merged.mergeImmunityUntil = now + MERGE_CHAIN_DELAY_MS;
+    Body.setVelocity(merged, { x: tw.vxAvg, y: tw.vyAvg });
+    updateScore((tw.newLevel + 1) * 10);
+  }
+
+  function updateMergePairTweens(now) {
+    var i;
+    for (i = mergePairTweens.length - 1; i >= 0; i--) {
+      var tw = mergePairTweens[i];
+      if (now - tw.startTime >= tw.duration) {
+        completeMergeTween(tw);
+        mergePairTweens.splice(i, 1);
+      }
+    }
+  }
+
   function markBallsInPlay() {
     var bodies = Composite.allBodies(world);
     for (var i = 0; i < bodies.length; i++) {
@@ -444,17 +602,37 @@
     const mx = (a.position.x + b.position.x) / 2;
     const my = (a.position.y + b.position.y) / 2;
     const newLevel = lvl + 1;
+    const vxAvg = (a.velocity.x + b.velocity.x) * 0.5;
+    const vyAvg = (a.velocity.y + b.velocity.y) * 0.5;
+
+    var clipA = a.shapeClipVertices ? cloneVertices(a.shapeClipVertices) : null;
+    var clipB = b.shapeClipVertices ? cloneVertices(b.shapeClipVertices) : null;
+
+    mergePairTweens.push({
+      ax0: a.position.x,
+      ay0: a.position.y,
+      bx0: b.position.x,
+      by0: b.position.y,
+      angleA: a.angle,
+      angleB: b.angle,
+      midX: mx,
+      midY: my,
+      level: lvl,
+      newLevel: newLevel,
+      clipA: clipA,
+      clipB: clipB,
+      spriteDrawWA: a.spriteDrawW,
+      spriteDrawHA: a.spriteDrawH,
+      spriteDrawWB: b.spriteDrawW,
+      spriteDrawHB: b.spriteDrawH,
+      startTime: t,
+      duration: MERGE_PAIR_TWEEN_MS,
+      vxAvg: vxAvg,
+      vyAvg: vyAvg
+    });
 
     Composite.remove(world, a);
     Composite.remove(world, b);
-
-    const merged = createBall(mx, my, newLevel, { fromMerge: true });
-    merged.mergeImmunityUntil = t + MERGE_CHAIN_DELAY_MS;
-    Body.setVelocity(merged, {
-      x: (a.velocity.x + b.velocity.x) * 0.5,
-      y: (a.velocity.y + b.velocity.y) * 0.5
-    });
-    updateScore((newLevel + 1) * 10);
     return true;
   }
 
@@ -569,12 +747,14 @@
     var dh = body.spriteDrawH || 2 * r;
     var clip = body.shapeClipVertices;
     var spawn = mergeSpawnVisualState(body, now);
+    var pop = mergePopVisualState(body, now);
+    var drawScale = spawn.scaleMult * pop.scaleMult;
 
     ctx.save();
     ctx.globalAlpha = spawn.alpha;
     ctx.translate(x, y);
     ctx.rotate(body.angle);
-    ctx.scale(spawn.scaleMult, spawn.scaleMult);
+    ctx.scale(drawScale, drawScale);
     ctx.scale(spr.xScale, spr.yScale);
     ctx.beginPath();
     var k;
@@ -607,6 +787,9 @@
   function drawFrame() {
     const ctx = canvas.getContext('2d');
     const now = performance.now();
+    updateMergePairTweens(now);
+    updateParticles(now);
+
     ctx.clearRect(0, 0, width, height);
 
     ctx.fillStyle = '#0c0c18';
@@ -630,12 +813,16 @@
     ctx.fillText('Danger — keep animals below', width - 10, DANGER_LINE_Y - 6);
     ctx.restore();
 
+    drawMergePairTweens(ctx, now);
+
     const bodies = Composite.allBodies(world);
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (b.label === 'wall') continue;
       drawAnimalBall(ctx, b, now);
     }
+
+    drawParticles(ctx, now);
   }
 
   function onEngineAfterUpdate() {
