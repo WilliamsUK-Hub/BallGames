@@ -239,6 +239,10 @@
   const gameOverOverlay = document.getElementById('gameOverOverlay');
   const finalScoreEl = document.getElementById('finalScore');
   const restartBtn = document.getElementById('restartBtn');
+  const hintEl = document.getElementById('hint');
+
+  /** False until assets load, engine runs, and input is enabled. */
+  var gameReady = false;
 
   let width = PLAY_WIDTH;
   let height = PLAY_HEIGHT;
@@ -838,7 +842,7 @@
   }
 
   function tryDrop(clientX, clientY) {
-    if (gameOver || dropCooldown) return;
+    if (!gameReady || gameOver || dropCooldown) return;
     const rect = canvas.getBoundingClientRect();
     const x = ((clientX - rect.left) / rect.width) * width;
     const y = ((clientY - rect.top) / rect.height) * height;
@@ -861,29 +865,44 @@
     canvas.setPointerCapture(e.pointerId);
   }
 
-  function preloadAnimalImages(done) {
-    var n = ANIMAL_URLS.length;
-    var left = n;
-    animalImages = new Array(n);
-    if (n === 0) {
-      done();
-      return;
-    }
-    for (var i = 0; i < n; i++) {
-      (function (idx) {
+  /**
+   * Loads every URL in ANIMAL_URLS into animalImages[i] in order.
+   * Uses Promise.all so all loads (or errors) must settle before the game starts.
+   */
+  function loadAllAnimalImages() {
+    animalImages = new Array(ANIMAL_URLS.length);
+    var promises = ANIMAL_URLS.map(function (url, idx) {
+      return new Promise(function (resolve) {
         var im = new Image();
-        im.onload = function () {
-          left--;
-          if (left === 0) done();
-        };
-        im.onerror = function () {
-          left--;
-          if (left === 0) done();
-        };
-        im.src = ANIMAL_URLS[idx];
-        animalImages[idx] = im;
-      })(i);
-    }
+        var settled = false;
+        function finish() {
+          if (settled) return;
+          settled = true;
+          im.onload = null;
+          im.onerror = null;
+          animalImages[idx] = im;
+          resolve(im);
+        }
+        im.onload = finish;
+        im.onerror = finish;
+        im.src = url;
+        if (im.complete && im.naturalWidth > 0) finish();
+      });
+    });
+    return Promise.all(promises);
+  }
+
+  function drawLoadingScreen() {
+    var ctx = canvas.getContext('2d');
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0c0c18';
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(180, 210, 255, 0.92)';
+    ctx.font = '20px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Loading...', width * 0.5, height * 0.5);
   }
 
   function buildShapeCache() {
@@ -913,7 +932,7 @@
     }
   }
 
-  function init() {
+  function startGame() {
     engine = Engine.create({ enableSleeping: true });
     world = engine.world;
     engine.positionIterations = 12;
@@ -930,18 +949,34 @@
     Events.on(engine, 'afterUpdate', onEngineAfterUpdate);
 
     resize();
-    window.addEventListener('resize', resize);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', fitPlayArea);
-    }
 
     canvas.addEventListener('pointerdown', onPointerDown);
     if (restartBtn) restartBtn.addEventListener('click', restartGame);
 
+    gameReady = true;
+    pickNextLevel();
     drawFrame();
-    preloadAnimalImages(function () {
+  }
+
+  function init() {
+    resize();
+    window.addEventListener('resize', function () {
+      resize();
+      if (!gameReady) drawLoadingScreen();
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', fitPlayArea);
+    }
+
+    if (hintEl) hintEl.textContent = 'Loading...';
+    drawLoadingScreen();
+
+    loadAllAnimalImages().then(function () {
+      if (hintEl) {
+        hintEl.textContent = 'Tap to drop · same animal merges · stay below the line';
+      }
       buildShapeCache();
-      pickNextLevel();
+      startGame();
     });
   }
 
