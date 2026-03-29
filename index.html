@@ -235,13 +235,18 @@
   /** One image per tier per theme: `{folder}/animal1.png` … `animalN.png` (level 0 → animal1). */
   const NUM_ANIMALS = 8;
   /**
-   * Add entries to add more themes — only `name` and `folder` are required.
-   * @type {Array<{ id?: string, name: string, folder: string }>}
+   * Themes: use `folder` for `assets/.../animal1.png`…`animal8.png`, or `noImages: true` for tinted balls only (no assets).
+   * @type {Array<{ id?: string, name: string, folder?: string, noImages?: boolean }>}
    */
   const THEMES = [
     { id: 'animals', name: 'Animals', folder: 'assets/theme1' },
-    { id: 'monsters', name: 'Monsters', folder: 'assets/theme2' }
+    { id: 'monsters', name: 'Monsters', folder: 'assets/theme2' },
+    { id: 'cartoons', name: 'Cartoons', folder: 'assets/cartoons' },
+    { id: 'balls', name: 'Balls', noImages: true }
   ];
+
+  /** 1×1 transparent pixel for HUD “next” preview when there are no theme images. */
+  const EMPTY_IMAGE_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
   /** Set when the player picks a theme; used by the loader and HUD preview. */
   var animalUrls = [];
 
@@ -915,10 +920,23 @@
     drawFrame();
   }
 
+  /** Matches the canvas fallback ball: light center, tier tint at edge. */
+  function nextPreviewStyleForBalls(level) {
+    var tint = FALLBACK_TINT[level];
+    return 'radial-gradient(circle at 32% 32%, #ffffff 0%, ' + tint + ' 42%, ' + tint + ' 100%)';
+  }
+
   function pickNextLevel() {
     nextDropLevel = Math.floor(Math.random() * 3);
-    nextPreview.src = animalUrls[nextDropLevel];
-    nextPreview.alt = 'Next: tier ' + (nextDropLevel + 1);
+    if (animalUrls.length === 0) {
+      nextPreview.src = EMPTY_IMAGE_DATA_URL;
+      nextPreview.alt = 'Next: tier ' + (nextDropLevel + 1) + ' color';
+      nextPreview.style.background = nextPreviewStyleForBalls(nextDropLevel);
+    } else {
+      nextPreview.style.background = '';
+      nextPreview.src = animalUrls[nextDropLevel];
+      nextPreview.alt = 'Next: tier ' + (nextDropLevel + 1);
+    }
   }
 
   function tryDrop(clientX, clientY) {
@@ -950,6 +968,10 @@
    * Uses Promise.all so all loads (or errors) must settle before the game starts.
    */
   function loadAllAnimalImages() {
+    if (animalUrls.length === 0) {
+      animalImages = [];
+      return Promise.resolve();
+    }
     animalImages = new Array(animalUrls.length);
     var promises = animalUrls.map(function (url, idx) {
       return new Promise(function (resolve) {
@@ -1013,13 +1035,13 @@
   }
 
   function beginLoadingChosenTheme(theme) {
-    animalUrls = animalUrlsForThemeFolder(theme.folder);
+    animalUrls = theme.noImages ? [] : animalUrlsForThemeFolder(theme.folder);
     themeChosen = true;
     if (themeScreen) themeScreen.style.display = 'none';
     if (gameEl) gameEl.classList.remove('is-hidden');
-    if (hintEl) hintEl.textContent = 'Loading...';
+    if (hintEl) hintEl.textContent = theme.noImages ? 'Tap to drop · same animal merges · stay below the line' : 'Loading...';
     resize();
-    drawLoadingScreen();
+    if (!theme.noImages) drawLoadingScreen();
     loadAllAnimalImages().then(function () {
       if (hintEl) {
         hintEl.textContent = 'Tap to drop · same animal merges · stay below the line';
