@@ -193,15 +193,18 @@
   const FRICTION_BALL_STATIC = 0.52;
   const AIR_DRAG = 0.03;
   const WALL_THICK = 100;
-  const MERGE_OVERLAP = 1.2;
+  /** Center-distance margin: merge when dist² < (ra+rb−MERGE_OVERLAP)². Lower = at first touch, not after deep overlap. */
+  const MERGE_OVERLAP = 0;
   const MAX_LEVEL = ANIMAL_URLS.length - 1;
   const SQUISH_MS = 100;
   /** Temporary multipliers on `render.sprite` while colliding (visual only). */
   const SQUISH_SPRITE_X = 1.09;
   const SQUISH_SPRITE_Y = 0.91;
-  /** Visual ease-in for balls created by merging (reduces pop / flash). */
-  const MERGE_SPAWN_DURATION_MS = 160;
-  const MERGE_SPAWN_SCALE_FROM = 0.9;
+  /** 0 = merged ball is full opacity/scale same frame (no spawn ease-in). */
+  const MERGE_SPAWN_DURATION_MS = 0;
+  const MERGE_SPAWN_SCALE_FROM = 1;
+  /** Merged balls ignore merge until this elapses so chain steps stay visible (ms). */
+  const MERGE_CHAIN_DELAY_MS = 260;
 
   /** Fixed playfield size (physics + canvas coordinate space). */
   const PLAY_WIDTH = 400;
@@ -292,11 +295,11 @@
     if (!body.render) body.render = {};
     body.render.sprite = { xScale: 1, yScale: 1 };
     body.inPlay = false;
-    if (createOpts.fromMerge) {
+    if (createOpts.fromMerge && MERGE_SPAWN_DURATION_MS > 0) {
       body.mergeSpawnAt = performance.now();
       body.mergeSpawnDuration = MERGE_SPAWN_DURATION_MS;
     }
-    World.add(world, body);
+    Composite.add(world, body);
     return body;
   }
 
@@ -309,6 +312,11 @@
   function mergeSpawnVisualState(body, now) {
     if (body.mergeSpawnAt == null) return { alpha: 1, scaleMult: 1 };
     var dur = body.mergeSpawnDuration != null ? body.mergeSpawnDuration : MERGE_SPAWN_DURATION_MS;
+    if (dur <= 0) {
+      body.mergeSpawnAt = null;
+      body.mergeSpawnDuration = null;
+      return { alpha: 1, scaleMult: 1 };
+    }
     var elapsed = now - body.mergeSpawnAt;
     if (elapsed >= dur) {
       body.mergeSpawnAt = null;
@@ -390,6 +398,10 @@
     return !!(a.isBall && b.isBall && a.ballType === b.ballType);
   }
 
+  function mergeImmune(body, t) {
+    return body.mergeImmunityUntil != null && t < body.mergeImmunityUntil;
+  }
+
   function bodyStillInWorld(body) {
     var list = Composite.allBodies(world);
     for (var i = 0; i < list.length; i++) {
@@ -412,10 +424,16 @@
     scoreEl.textContent = String(score);
   }
 
-  /** @returns {boolean} true if a merge actually happened */
+  /**
+   * mergeScheduled: only blocks duplicate mergePair calls on the same two bodies before Composite.remove runs.
+   * It does not skip the first collision — unrelated merges are unaffected.
+   * @returns {boolean} true if a merge actually happened
+   */
   function mergePair(a, b) {
+    var t = performance.now();
     if (!bodyStillInWorld(a) || !bodyStillInWorld(b)) return false;
     if (!sameBallType(a, b)) return false;
+    if (mergeImmune(a, t) || mergeImmune(b, t)) return false;
     if (a.mergeScheduled || b.mergeScheduled) return false;
     const lvl = a.ballType;
     if (lvl >= MAX_LEVEL) return false;
@@ -427,10 +445,11 @@
     const my = (a.position.y + b.position.y) / 2;
     const newLevel = lvl + 1;
 
-    World.remove(world, a);
-    World.remove(world, b);
+    Composite.remove(world, a);
+    Composite.remove(world, b);
 
     const merged = createBall(mx, my, newLevel, { fromMerge: true });
+    merged.mergeImmunityUntil = t + MERGE_CHAIN_DELAY_MS;
     Body.setVelocity(merged, {
       x: (a.velocity.x + b.velocity.x) * 0.5,
       y: (a.velocity.y + b.velocity.y) * 0.5
@@ -439,12 +458,18 @@
     return true;
   }
 
-  function checkMerge(event) {
+  /**
+   * Same-frame overlap backup (no queue). Runs after pair merges so missed contacts still resolve this tick.
+   */
+  function mergeFromCollisionEvent(event) {
     const pairs = event.pairs;
     for (let i = 0; i < pairs.length; i++) {
-      const { bodyA, bodyB } = pairs[i];
+      const bodyA = pairs[i].bodyA;
+      const bodyB = pairs[i].bodyB;
+      if (!bodyA.isBall || !bodyB.isBall) continue;
       mergePair(bodyA, bodyB);
     }
+    mergeOverlappingBalls();
   }
 
   /** Physics events sometimes miss contacts; overlap test picks up real collisions. */
@@ -527,7 +552,7 @@
       label: 'wall'
     });
     wallBodies = [ground, left, right];
-    World.add(world, wallBodies);
+    Composite.add(world, wallBodies);
   }
 
   function drawAnimalBall(ctx, body, now) {
@@ -578,7 +603,8 @@
     ctx.globalAlpha = 1;
   }
 
-  function renderLoop() {
+  /** Draw after engine.afterUpdate so merges run before paint (avoids extra rAF racing the Runner). */
+  function drawFrame() {
     const ctx = canvas.getContext('2d');
     const now = performance.now();
     ctx.clearRect(0, 0, width, height);
@@ -610,8 +636,12 @@
       if (b.label === 'wall') continue;
       drawAnimalBall(ctx, b, now);
     }
+  }
 
-    requestAnimationFrame(renderLoop);
+  function onEngineAfterUpdate() {
+    mergeOverlappingBalls();
+    checkDangerLine();
+    drawFrame();
   }
 
   function pickNextLevel() {
@@ -707,13 +737,10 @@
     runner = Runner.create();
     Runner.run(runner, engine);
 
-    Events.on(engine, 'collisionStart', checkMerge);
+    Events.on(engine, 'collisionStart', mergeFromCollisionEvent);
     Events.on(engine, 'collisionStart', onCollisionSquish);
-    Events.on(engine, 'collisionActive', checkMerge);
-    Events.on(engine, 'afterUpdate', function () {
-      mergeOverlappingBalls();
-      checkDangerLine();
-    });
+    Events.on(engine, 'collisionActive', mergeFromCollisionEvent);
+    Events.on(engine, 'afterUpdate', onEngineAfterUpdate);
 
     resize();
     window.addEventListener('resize', resize);
@@ -724,7 +751,7 @@
     canvas.addEventListener('pointerdown', onPointerDown);
     if (restartBtn) restartBtn.addEventListener('click', restartGame);
 
-    renderLoop();
+    drawFrame();
     preloadAnimalImages(function () {
       buildShapeCache();
       pickNextLevel();
