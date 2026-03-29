@@ -134,10 +134,68 @@
       touch-action: manipulation;
     }
     #restartBtn:active { transform: scale(0.98); }
+
+    #themeScreen {
+      position: fixed;
+      inset: 0;
+      z-index: 25;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      padding: 24px;
+      background: linear-gradient(180deg, #0a0a14 0%, #06060e 50%, #0a0a12 100%);
+      box-shadow: inset 0 0 80px rgba(0, 80, 140, 0.12);
+    }
+    #themeScreen h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #e0e8f8;
+      text-shadow: 0 0 24px rgba(120, 200, 255, 0.35);
+    }
+    .theme-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      width: min(100%, 280px);
+    }
+    .theme-btn {
+      padding: 16px 22px;
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      border: 2px solid rgba(120, 210, 255, 0.75);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(25, 35, 55, 0.95), rgba(12, 16, 28, 0.98));
+      color: #e8f0ff;
+      cursor: pointer;
+      touch-action: manipulation;
+      box-shadow:
+        0 0 20px rgba(0, 180, 255, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .theme-btn:hover {
+      border-color: rgba(160, 230, 255, 0.95);
+      background: linear-gradient(180deg, rgba(35, 48, 72, 0.98), rgba(18, 22, 38, 0.99));
+    }
+    .theme-btn:active {
+      transform: scale(0.98);
+    }
+    #game.is-hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
-  <div id="game">
+  <div id="themeScreen" aria-label="Theme selection">
+    <h1>Choose a theme</h1>
+    <div class="theme-buttons" id="themeButtons"></div>
+  </div>
+
+  <div id="game" class="is-hidden">
     <div id="hud">
       <span>Next</span>
       <img id="nextPreview" src="" width="34" height="34" alt="" />
@@ -174,12 +232,29 @@
   const Matter = window.Matter;
   const { Engine, Runner, World, Bodies, Body, Events, Composite } = Matter;
 
-  /** One image per tier: assets/animal1.png … animalN.png (level 0 → animal1). */
+  /** One image per tier per theme: `{folder}/animal1.png` … `animalN.png` (level 0 → animal1). */
   const NUM_ANIMALS = 8;
-  const ANIMAL_URLS = [];
-  for (var ai = 0; ai < NUM_ANIMALS; ai++) {
-    ANIMAL_URLS.push('assets/animal' + (ai + 1) + '.png');
+  /**
+   * Add entries to add more themes — only `name` and `folder` are required.
+   * @type {Array<{ id?: string, name: string, folder: string }>}
+   */
+  const THEMES = [
+    { id: 'animals', name: 'Animals', folder: 'assets/theme1' },
+    { id: 'monsters', name: 'Monsters', folder: 'assets/theme2' }
+  ];
+  /** Set when the player picks a theme; used by the loader and HUD preview. */
+  var animalUrls = [];
+
+  function animalUrlsForThemeFolder(folder) {
+    var base = folder.replace(/\/+$/, '');
+    var urls = [];
+    var i;
+    for (i = 0; i < NUM_ANIMALS; i++) {
+      urls.push(base + '/animal' + (i + 1) + '.png');
+    }
+    return urls;
   }
+
   const FALLBACK_TINT = [
     '#b8c4d4', '#ffb347', '#daa06d', '#f0f0f0',
     '#ffb6c8', '#e8e8e8', '#a67c52', '#f4c430'
@@ -195,7 +270,7 @@
   const WALL_THICK = 100;
   /** Center-distance margin: merge when dist² < (ra+rb−MERGE_OVERLAP)². Lower = at first touch, not after deep overlap. */
   const MERGE_OVERLAP = 0;
-  const MAX_LEVEL = ANIMAL_URLS.length - 1;
+  const MAX_LEVEL = NUM_ANIMALS - 1;
   const SQUISH_MS = 100;
   /** Temporary multipliers on `render.sprite` while colliding (visual only). */
   const SQUISH_SPRITE_X = 1.09;
@@ -240,9 +315,14 @@
   const finalScoreEl = document.getElementById('finalScore');
   const restartBtn = document.getElementById('restartBtn');
   const hintEl = document.getElementById('hint');
+  const themeScreen = document.getElementById('themeScreen');
+  const themeButtonsEl = document.getElementById('themeButtons');
+  const gameEl = document.getElementById('game');
 
   /** False until assets load, engine runs, and input is enabled. */
   var gameReady = false;
+  /** True after a theme is chosen and #game is shown (loading or playing). */
+  var themeChosen = false;
 
   let width = PLAY_WIDTH;
   let height = PLAY_HEIGHT;
@@ -837,7 +917,7 @@
 
   function pickNextLevel() {
     nextDropLevel = Math.floor(Math.random() * 3);
-    nextPreview.src = ANIMAL_URLS[nextDropLevel];
+    nextPreview.src = animalUrls[nextDropLevel];
     nextPreview.alt = 'Next: tier ' + (nextDropLevel + 1);
   }
 
@@ -866,12 +946,12 @@
   }
 
   /**
-   * Loads every URL in ANIMAL_URLS into animalImages[i] in order.
+   * Loads every URL in animalUrls into animalImages[i] in order.
    * Uses Promise.all so all loads (or errors) must settle before the game starts.
    */
   function loadAllAnimalImages() {
-    animalImages = new Array(ANIMAL_URLS.length);
-    var promises = ANIMAL_URLS.map(function (url, idx) {
+    animalImages = new Array(animalUrls.length);
+    var promises = animalUrls.map(function (url, idx) {
       return new Promise(function (resolve) {
         var im = new Image();
         var settled = false;
@@ -932,6 +1012,39 @@
     }
   }
 
+  function beginLoadingChosenTheme(theme) {
+    animalUrls = animalUrlsForThemeFolder(theme.folder);
+    themeChosen = true;
+    if (themeScreen) themeScreen.style.display = 'none';
+    if (gameEl) gameEl.classList.remove('is-hidden');
+    if (hintEl) hintEl.textContent = 'Loading...';
+    resize();
+    drawLoadingScreen();
+    loadAllAnimalImages().then(function () {
+      if (hintEl) {
+        hintEl.textContent = 'Tap to drop · same animal merges · stay below the line';
+      }
+      buildShapeCache();
+      startGame();
+    });
+  }
+
+  function buildThemeButtons() {
+    if (!themeButtonsEl) return;
+    themeButtonsEl.innerHTML = '';
+    THEMES.forEach(function (theme) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'theme-btn';
+      btn.textContent = theme.name;
+      if (theme.id) btn.dataset.themeId = theme.id;
+      btn.addEventListener('click', function () {
+        beginLoadingChosenTheme(theme);
+      });
+      themeButtonsEl.appendChild(btn);
+    });
+  }
+
   function startGame() {
     engine = Engine.create({ enableSleeping: true });
     world = engine.world;
@@ -959,25 +1072,15 @@
   }
 
   function init() {
+    buildThemeButtons();
     resize();
     window.addEventListener('resize', function () {
       resize();
-      if (!gameReady) drawLoadingScreen();
+      if (!gameReady && themeChosen) drawLoadingScreen();
     });
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', fitPlayArea);
     }
-
-    if (hintEl) hintEl.textContent = 'Loading...';
-    drawLoadingScreen();
-
-    loadAllAnimalImages().then(function () {
-      if (hintEl) {
-        hintEl.textContent = 'Tap to drop · same animal merges · stay below the line';
-      }
-      buildShapeCache();
-      startGame();
-    });
   }
 
   init();
