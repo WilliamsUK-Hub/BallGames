@@ -1,0 +1,20 @@
+# Project Rules for BallGames
+
+## Tech Stack
+- Use Matter.js for 2D physics.
+- Use HTML5 Canvas (or p5.js if preferred) for rendering.
+- Keep the game mobile-first (responsive and touch-enabled).
+
+## Physics Style
+- "Squashy" Feel: Always use high restitution (0.6 - 0.8) and low friction.
+- Same-sized balls should merge into the next level up upon collision.
+- Ensure balls don't "clip" through the floor or walls during fast movement.
+
+## Coding Preferences
+- Write clean, vanilla JavaScript unless a library is requested.
+- Use Pointer Events (pointerdown, pointermove) instead of Mouse Events to ensure Android compatibility.
+- Keep the logic modular (e.g., separate functions for 'createBall', 'checkMerge', and 'updateScore').
+
+## Mobile Integration
+- Always include a viewport meta tag for mobile scaling.
+- Ensure the game container fills the screen height without scrolling.
